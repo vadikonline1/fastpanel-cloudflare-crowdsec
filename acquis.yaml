@@ -1,0 +1,21 @@
+# ACCESS logs
+- path: /var/www/**/data/logs/*-frontend.access.log
+  format: nginx
+  labels:
+    service: fastpanel-frontend
+
+- path: /var/www/**/data/logs/*-backend.access.log
+  format: nginx
+  labels:
+    service: fastpanel-backend
+
+# ERROR logs
+- path: /var/www/**/data/logs/*-frontend.error.log
+  format: nginx-error
+  labels:
+    service: fastpanel-frontend
+
+- path: /var/www/**/data/logs/*-backend.error.log
+  format: nginx-error
+  labels:
+    service: fastpanel-backend
