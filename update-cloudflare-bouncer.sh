@@ -8,15 +8,25 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "⚠️ Fișierul $ENV_FILE nu există. Oprire."
   exit 1
 fi
+
 source "$ENV_FILE"
 
-# === 2. Set config paths ===
+# === 2. Validări variabile esențiale ===
+REQUIRED_VARS=(CF_API_TOKEN CF_API_EMAIL CF_ACCOUNT_ID TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_THREAD_ID CROWDSEC_LAPI_KEY)
+for VAR in "${REQUIRED_VARS[@]}"; do
+  if [[ -z "${!VAR}" ]]; then
+    echo "❌ Variabila $VAR nu este setată în $ENV_FILE"
+    exit 1
+  fi
+done
+
+# === 3. Set config paths ===
 CONFIG_FILE="/etc/crowdsec/bouncers/cs-cloudflare-bouncer.yaml"
 TMP_CONFIG="/tmp/cs-cloudflare-bouncer.new.yaml"
 TMP_ZONES="/tmp/cf_zones.json"
 LOG_FILE="/var/log/cloudflare-bouncer-update.log"
 
-# === 3. Obține lista de zone din Cloudflare ===
+# === 4. Obține lista de zone din Cloudflare ===
 curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
   -H "Authorization: Bearer $CF_API_TOKEN" \
   -H "Content-Type: application/json" > "$TMP_ZONES"
@@ -31,19 +41,20 @@ if [[ -z "$ZONES" ]]; then
   exit 1
 fi
 
-# === 4. Construiește lista zone_ids ===
+# === 5. Construiește lista zone_ids ===
 ZONE_IDS=$(echo "$ZONES" | awk -F ':' '{print "  - \"" $2 "\"" }')
 
-# === 5. Construiește whitelist IPs ===
+# === 6. Construiește whitelist IPs ===
 WHITELIST_BLOCK=""
 IFS=' ' read -r -a IPS <<< "$WHITELIST_IPS"
 for ip in "${IPS[@]}"; do
   WHITELIST_BLOCK+="  - $ip"$'\n'
 done
 
-# === 6. Generează noul config temporar ===
+# === 7. Generează noul config temporar ===
 cat > "$TMP_CONFIG" <<EOF
-api_key: "$DASHBOARD_API_KEY"
+crowdsec_lapi_url: "http://127.0.0.1:8080"
+lapi_key: "$CROWDSEC_LAPI_KEY"
 api_token: "$CF_API_TOKEN"
 api_email: "$CF_API_EMAIL"
 account_id: "$CF_ACCOUNT_ID"
@@ -59,7 +70,7 @@ whitelisted_ips:
 $WHITELIST_BLOCK
 EOF
 
-# === 7. Compară și aplică modificări doar dacă e diferit ===
+# === 8. Compară și aplică modificări doar dacă e diferit ===
 if cmp -s "$TMP_CONFIG" "$CONFIG_FILE"; then
   echo "[=] Nicio modificare. Configul este deja actualizat." | tee -a "$LOG_FILE"
 else
@@ -74,6 +85,6 @@ else
     -d text="✅ Config bouncer Cloudflare actualizat. Domenii: $(echo "$ZONES" | wc -l)"
 fi
 
-# === 8. Afișare în consolă ===
+# === 9. Afișare în consolă ===
 echo "✅ Domenii actualizate:"
 echo "$ZONES"
