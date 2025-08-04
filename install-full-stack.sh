@@ -73,14 +73,45 @@ cscli collections install crowdsecurity/vsftpd
 cscli collections install crowdsecurity/wordpress
 cscli collections install crowdsecurity/mysql
 cscli collections install mstilkerich/bind9
+cscli collections install crowdsecurity/proftpd
 cscli parsers install crowdsecurity/iptables-logs
 cscli parsers install crowdsecurity/syslog-logs
-cscli collections install crowdsecurity/proftpd
+cscli parsers install crowdsecurity/nginx-logs
 
-systemctl reload crowdsec
+# 8. Verifică și setează acquis.yaml pentru FastPanel logs
+ACQUIS_FILE="/etc/crowdsec/acquis.yaml"
+if [ ! -f "$ACQUIS_FILE" ]; then
+  echo "📝 Creez fișierul acquis.yaml cu loguri personalizate FastPanel..."
+  cat > "$ACQUIS_FILE" <<EOF
+# ACCESS logs
+- path: /var/www/**/data/logs/*-frontend.access.log
+  format: nginx
+  labels:
+    service: fastpanel-frontend
 
+- path: /var/www/**/data/logs/*-backend.access.log
+  format: nginx
+  labels:
+    service: fastpanel-backend
 
-# 8. Config Cloudflare bouncer
+# ERROR logs
+- path: /var/www/**/data/logs/*-frontend.error.log
+  format: nginx-error
+  labels:
+    service: fastpanel-frontend
+
+- path: /var/www/**/data/logs/*-backend.error.log
+  format: nginx-error
+  labels:
+    service: fastpanel-backend
+EOF
+else
+  echo "✅ Fișierul acquis.yaml există deja. Nu se suprascrie."
+fi
+
+systemctl restart crowdsec
+
+# 9. Config Cloudflare bouncer
 echo "⚙️  Configurez bouncer Cloudflare..."
 CLOUDFLARE_BOUNCER_CONFIG="/etc/crowdsec/bouncers/cs-cloudflare-bouncer.yaml"
 mkdir -p /etc/crowdsec/bouncers
@@ -100,7 +131,7 @@ EOF
 
 systemctl restart crowdsec-cloudflare-bouncer
 
-# 9. Whitelist IP-uri
+# 10. Whitelist IP-uri
 echo "🔐 Aplic whitelist la IP-uri/subrețele..."
 WHITELIST_FILE="/etc/crowdsec/config/whitelists.yaml"
 cat > "$WHITELIST_FILE" <<EOF
@@ -118,7 +149,6 @@ for ip in $WHITELIST_IPS; do
   fi
 done
 
-# IP public server
 SERVER_IP=$(curl -s https://ipinfo.io/ip)
 if [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "    - \"$SERVER_IP\"" >> "$WHITELIST_FILE"
@@ -127,7 +157,7 @@ fi
 
 systemctl reload crowdsec
 
-# 10. Notificări Telegram
+# 11. Notificări Telegram
 echo "📩 Configurez notificări Telegram..."
 NOTIFY_SCRIPT="/etc/cloudflare-bouncer/notify-telegram.sh"
 cat > "$NOTIFY_SCRIPT" <<EOF
@@ -141,10 +171,9 @@ EOF
 
 chmod +x "$NOTIFY_SCRIPT"
 
-# Mesaj de test
 "$NOTIFY_SCRIPT" "✅ Instalare completă CrowdSec + FastPanel + Cloudflare + Telegram OK"
 
-# 11. Hook evenimente
+# 12. Hook evenimente
 HOOK_SCRIPT="/etc/crowdsec/plugins/notification.sh"
 mkdir -p /etc/crowdsec/plugins
 cat > "$HOOK_SCRIPT" <<EOF
@@ -158,22 +187,21 @@ EOF
 
 chmod +x "$HOOK_SCRIPT"
 
-# 12. Conectare la CrowdSec Console (Dashboard API)
+# 13. Conectare la CrowdSec Console
 echo "🌐 Conectez la CrowdSec Console via API..."
 cscli console enroll -e context "$DASHBOARD_API_KEY" || echo "❌ Conectarea la dashboard a eșuat"
 
-# 13. Permisiuni scripturi
+# 14. Permisiuni scripturi
 echo "🛠️  Setez permisiuni pentru scripturi..."
 chmod +x /etc/cloudflare-bouncer/sync-env.sh
 chmod +x /etc/cloudflare-bouncer/install-full-stack.sh
 chmod +x /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh
 
-# 14. Adaugă în crontab
+# 15. Adaugă în crontab
 echo "📅 Adaug joburi în crontab..."
 (crontab -l 2>/dev/null; echo "0 */6 * * * /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh >> /var/log/cloudflare-bouncer-update.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "*/30 * * * * /etc/cloudflare-bouncer/sync-env.sh >> /var/log/cloudflare-sync.log 2>&1") | crontab -
 
-# 15. Rulează instalare finală
-echo "🚀 Execut scriptul curent pentru a finaliza procesul...
-/etc/cloudflare-bouncer/install-full-stack.sh"
-
+# 16. Finalizare
+echo "🚀 Execut scriptul curent pentru a finaliza procesul..."
+/etc/cloudflare-bouncer/install-full-stack.sh
