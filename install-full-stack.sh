@@ -79,35 +79,37 @@ cscli parsers install crowdsecurity/syslog-logs
 cscli parsers install crowdsecurity/nginx-logs
 
 # 8. Verifică și setează acquis.yaml pentru FastPanel logs
+cp /etc/crowdsec/acquis.yaml /etc/crowdsec/acquis.yaml.bak.$(date +%s)
+
 ACQUIS_FILE="/etc/crowdsec/acquis.yaml"
-if [ ! -f "$ACQUIS_FILE" ]; then
-  echo "📝 Creez fișierul acquis.yaml cu loguri personalizate FastPanel..."
-  cat > "$ACQUIS_FILE" <<EOF
-# ACCESS logs
-- path: /var/www/**/data/logs/*-frontend.access.log
-  format: nginx
-  labels:
-    service: fastpanel-frontend
 
-- path: /var/www/**/data/logs/*-backend.access.log
-  format: nginx
-  labels:
-    service: fastpanel-backend
+echo "📝 Adaug configurație pentru FastPanel logs în acquis.yaml..."
 
-# ERROR logs
-- path: /var/www/**/data/logs/*-frontend.error.log
-  format: nginx-error
-  labels:
-    service: fastpanel-frontend
-
-- path: /var/www/**/data/logs/*-backend.error.log
-  format: nginx-error
-  labels:
-    service: fastpanel-backend
+cat > "$ACQUIS_FILE" <<EOF
+filenames:
+  - /var/log/nginx/access.log
+  - /var/log/nginx/error.log
+labels:
+  type: nginx
+---
+filenames:
+  - /var/www/*/data/logs/*-backend.access.log
+  - /var/www/*/data/logs/*-frontend.access.log
+  - /var/www/*/data/logs/*-backend.error.log
+  - /var/www/*/data/logs/*-frontend.error.log
+labels:
+  type: nginx
+---
+filenames:
+  - /var/log/apache2/access.log
+  - /var/log/apache2/error.log
+  - /var/log/apache2/other_vhosts_access.log
+labels:
+  type: apache2
 EOF
-else
-  echo "✅ Fișierul acquis.yaml există deja. Nu se suprascrie."
-fi
+
+echo "✅ acquis.yaml generat cu succes."
+
 
 systemctl restart crowdsec
 
@@ -156,6 +158,11 @@ if [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 systemctl reload crowdsec
+if systemctl restart crowdsec; then
+  echo "✅ CrowdSec repornit cu succes."
+else
+  echo "❌ Eroare la restartarea CrowdSec. Verifică logurile."
+fi
 
 # 11. Notificări Telegram
 echo "📩 Configurez notificări Telegram..."
