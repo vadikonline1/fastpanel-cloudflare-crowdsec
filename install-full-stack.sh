@@ -90,7 +90,7 @@ filenames:
   - /var/log/nginx/access.log
   - /var/log/nginx/error.log
 labels:
-  type: nginx
+  type: nginx-logs
 ---
 filenames:
   - /var/www/*/data/logs/*-backend.access.log
@@ -98,7 +98,7 @@ filenames:
   - /var/www/*/data/logs/*-backend.error.log
   - /var/www/*/data/logs/*-frontend.error.log
 labels:
-  type: nginx
+  type: nginx-logs
 ---
 filenames:
   - /var/log/apache2/access.log
