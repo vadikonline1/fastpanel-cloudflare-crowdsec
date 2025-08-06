@@ -1,91 +1,122 @@
 #!/bin/bash
-
 set -e
 
+### === CONFIG ===
 ENV_FILE="/etc/cloudflare-bouncer/fastpanel-crowdsec-cloudflare.env"
-mkdir -p /etc/cloudflare-bouncer
+ALLOWLIST_NAME="my_whitelists"
+NOTIFY_SCRIPT="/etc/cloudflare-bouncer/notify-telegram.sh"
+HOOK_SCRIPT="/etc/crowdsec/plugins/notification.sh"
+INSTALL_SCRIPT_PATH="/etc/cloudflare-bouncer/install-full-stack.sh"
+ACQUIS_FILE="/etc/crowdsec/acquis.yaml"
+CLOUDFLARE_BOUNCER_CONFIG="/etc/crowdsec/bouncers/cs-cloudflare-bouncer.yaml"
 
-# 1. Verificăm .env
-if [ ! -f "$ENV_FILE" ]; then
-  echo "⚠️  Fișierul $ENV_FILE nu există. Creează-l și definește variabilele:"
-  echo "Exemplu: WHITELIST_IPS=\"1.2.3.4 5.6.7.0/24\""
-  exit 1
-fi
+### === FUNCȚII ===
 
-chmod 600 "$ENV_FILE"
+log() { echo -e "🔹 $1"; }
+notify() { bash "$NOTIFY_SCRIPT" "$1"; }
 
-# Încarcă variabilele
-set -o allexport
-source "$ENV_FILE"
-set +o allexport
-
-# 2. Verificăm variabile esențiale
-REQUIRED_VARS=(CF_API_TOKEN CF_API_EMAIL CF_ACCOUNT_ID FASTPANEL_USER FASTPANEL_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_THREAD_ID DASHBOARD_API_KEY)
-
-for VAR in "${REQUIRED_VARS[@]}"; do
-  if [[ -z "${!VAR}" ]]; then
-    echo "❌ Variabila $VAR nu este setată în $ENV_FILE"
+check_env_file() {
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "⚠️  Fișierul $ENV_FILE nu există. Creează-l cu variabilele necesare."
     exit 1
   fi
-done
 
-# 3. Update sistem
-echo "🛠️  Update complet al sistemului..."
-DEBIAN_FRONTEND=noninteractive apt-get update && apt-get upgrade -y && apt-get dist-upgrade -y && apt-get autoremove -y && apt-get update && apt-get install -y jq && apt-get install -y mc
+  chmod 600 "$ENV_FILE"
+  set -o allexport
+  source "$ENV_FILE"
+  set +o allexport
 
-# 4. Repo CrowdSec
-echo "➡️  Adaug repository-ul oficial CrowdSec..."
-apt-get install -y curl gnupg lsb-release
-curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.deb.sh | bash
+  REQUIRED_VARS=(CF_API_TOKEN CF_API_EMAIL CF_ACCOUNT_ID FASTPANEL_USER FASTPANEL_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_THREAD_ID DASHBOARD_API_KEY)
+  for VAR in "${REQUIRED_VARS[@]}"; do
+    if [[ -z "${!VAR}" ]]; then
+      echo "❌ Variabila $VAR nu este setată în $ENV_FILE"
+      exit 1
+    fi
+  done
+}
 
-# 5. Instalează FastPanel
-echo "📦 Instalez FastPanel..."
-apt-get install -y ca-certificates wget
-wget https://repo.fastpanel.direct/install_fastpanel.sh -O - | bash -
+update_system() {
+  log "Actualizez sistemul..."
+  DEBIAN_FRONTEND=noninteractive apt-get update
+  apt-get upgrade -y
+  apt-get dist-upgrade -y
+  apt-get autoremove -y
+  apt-get install -y jq mc curl gnupg lsb-release
+}
 
-echo "🔑 Setez parola admin în FastPanel..."
-mogwai chpasswd -u "$FASTPANEL_USER" -p "$FASTPANEL_PASSWORD"
+install_fastpanel() {
+  log "Instalez FastPanel..."
+  apt-get install -y ca-certificates wget
+  wget https://repo.fastpanel.direct/install_fastpanel.sh -O - | bash -
+  mogwai chpasswd -u "$FASTPANEL_USER" -p "$FASTPANEL_PASSWORD"
+}
 
-# 6. Instalează CrowdSec + bouncere
-echo "🛡️  Instalez CrowdSec și bouncerele..."
-apt install -y crowdsec crowdsec-firewall-bouncer-iptables crowdsec-cloudflare-bouncer
+install_crowdsec() {
+  log "Instalez CrowdSec și bouncerele..."
+  curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.deb.sh | bash
+  apt install -y crowdsec crowdsec-firewall-bouncer-iptables crowdsec-cloudflare-bouncer
+  systemctl enable --now crowdsec crowdsec-firewall-bouncer crowdsec-cloudflare-bouncer
+}
 
-systemctl enable --now crowdsec
-systemctl enable --now crowdsec-firewall-bouncer
-systemctl enable --now crowdsec-cloudflare-bouncer
+install_collections() {
+  log "Instalez colecții CrowdSec..."
+  local collections=(
+    crowdsecurity/base-http-scenarios openappsec/openappsec
+    crowdsecurity/apache2 crowdsecurity/appsec-crs
+    crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-wordpress
+    crowdsecurity/postfix crowdsecurity/dovecot crowdsecurity/exim
+    crowdsecurity/http-cve crowdsecurity/linux crowdsecurity/linux-lpe
+    crowdsecurity/nginx crowdsecurity/http-dos crowdsecurity/sshd
+    crowdsecurity/vsftpd crowdsecurity/wordpress crowdsecurity/mysql
+    mstilkerich/bind9 crowdsecurity/proftpd crowdsecurity/whitelist-good-actors
+  )
 
-# 7. Parsere și scenarii
-echo "🔍 Instalez parsere/scenarii CrowdSec..."
+  for col in "${collections[@]}"; do
+    cscli collections install "$col"
+  done
 
-# 📦 Colecții (collections)
-cscli collections install crowdsecurity/apache2
-cscli collections install crowdsecurity/appsec-crs
-cscli collections install crowdsecurity/appsec-virtual-patching
-cscli collections install crowdsecurity/appsec-wordpress
-cscli collections install crowdsecurity/dovecot
-cscli collections install crowdsecurity/exim
-cscli collections install crowdsecurity/http-cve
-cscli collections install crowdsecurity/linux
-cscli collections install crowdsecurity/linux-lpe
-cscli collections install crowdsecurity/nginx
-cscli collections install crowdsecurity/sshd
-cscli collections install crowdsecurity/vsftpd
-cscli collections install crowdsecurity/wordpress
-cscli collections install crowdsecurity/mysql
-cscli collections install mstilkerich/bind9
-cscli collections install crowdsecurity/proftpd
-cscli parsers install crowdsecurity/iptables-logs
-cscli parsers install crowdsecurity/syslog-logs
-cscli parsers install crowdsecurity/nginx-logs
+  cscli scenarios install crowdsecurity/appsec-vpatch
+  cscli scenarios install crowdsecurity/http-wordpress-scan
+  cscli scenarios install crowdsecurity/http-wordpress_user-enum
+  cscli scenarios install crowdsecurity/http-bf-wordpress_bf
+  cscli scenarios install crowdsecurity/http-bf-wordpress_bf_xmlrpc
+  cscli scenarios install crowdsecurity/http-wordpress_wpconfig
+  cscli scenarios install crowdsecurity/nginx-req-limit-exceeded
+  cscli scenarios install crowdsecurity/postfix-non-smtp-command
+  cscli scenarios install crowdsecurity/postfix-spam
+  cscli scenarios install crowdsecurity/postfix-relay-denied
+  cscli scenarios install crowdsecurity/exim-spam
+  cscli scenarios install crowdsecurity/exim-bf
+  cscli scenarios install mstilkerich/bind9-refused
+  cscli scenarios install crowdsecurity/proftpd-bf_user-enum
+  cscli scenarios install crowdsecurity/proftpd-bf
+  cscli scenarios install crowdsecurity/mysql-bf
 
-# 8. Verifică și setează acquis.yaml pentru FastPanel logs
-cp /etc/crowdsec/acquis.yaml /etc/crowdsec/acquis.yaml.bak.$(date +%s)
+  cscli parsers install crowdsecurity/iptables-logs
+  cscli parsers install crowdsecurity/syslog-logs
+  cscli parsers install crowdsecurity/nginx-logs
 
-ACQUIS_FILE="/etc/crowdsec/acquis.yaml"
+  cscli appsec-configs install crowdsecurity/appsec-default
+  cscli appsec-configs install crowdsecurity/crs
+  cscli appsec-configs install crowdsecurity/generic-rules
+  cscli appsec-configs install crowdsecurity/virtual-patching
 
-echo "📝 Adaug configurație pentru FastPanel logs în acquis.yaml..."
+  cscli appsec-rules install crowdsecurity/base-config
+  cscli appsec-rules install crowdsecurity/experimental-no-user-agent
+  cscli appsec-rules install crowdsecurity/generic-freemarker-ssti
+  cscli appsec-rules install crowdsecurity/crs
+  cscli appsec-rules install crowdsecurity/generic-wordpress-uploads-listing
+  cscli appsec-rules install crowdsecurity/generic-wordpress-uploads-php
+  cscli appsec-rules install crowdsecurity/vpatch-env-access
+  cscli appsec-rules install crowdsecurity/vpatch-git-config
+  cscli appsec-rules install crowdsecurity/vpatch-symfony-profiler
+}
 
-cat > "$ACQUIS_FILE" <<EOF
+configure_acquis() {
+  log "Configurez acquis.yaml..."
+  cp "$ACQUIS_FILE" "$ACQUIS_FILE.bak.$(date +%s)"
+
+  cat > "$ACQUIS_FILE" <<EOF
 filenames:
   - /var/log/nginx/access.log
   - /var/log/nginx/error.log
@@ -106,18 +137,21 @@ filenames:
   - /var/log/apache2/other_vhosts_access.log
 labels:
   type: apache2
+---
+filenames:
+  - /var/log/auth.log
+  - /var/log/syslog
+labels:
+  type: syslog
 EOF
 
-echo "✅ acquis.yaml generat cu succes."
+  systemctl restart crowdsec
+}
 
-
-systemctl restart crowdsec
-
-# 9. Config Cloudflare bouncer
-echo "⚙️  Configurez bouncer Cloudflare..."
-CLOUDFLARE_BOUNCER_CONFIG="/etc/crowdsec/bouncers/cs-cloudflare-bouncer.yaml"
-mkdir -p /etc/crowdsec/bouncers
-cat > "$CLOUDFLARE_BOUNCER_CONFIG" <<EOF
+configure_cloudflare_bouncer() {
+  log "Configurez Cloudflare bouncer..."
+  mkdir -p /etc/crowdsec/bouncers
+  cat > "$CLOUDFLARE_BOUNCER_CONFIG" <<EOF
 api_key: ""
 api_token: "$CF_API_TOKEN"
 api_email: "$CF_API_EMAIL"
@@ -131,43 +165,32 @@ log_level: info
 update_frequency: 10m
 EOF
 
-systemctl restart crowdsec-cloudflare-bouncer
+  systemctl restart crowdsec-cloudflare-bouncer
+}
 
-# 10. Whitelist IP-uri
-echo "🔐 Aplic whitelist la IP-uri/subrețele..."
-WHITELIST_FILE="/etc/crowdsec/config/whitelists.yaml"
-cat > "$WHITELIST_FILE" <<EOF
-whitelists:
-  - reason: "Webhook-uri, IP local și IP-uri personale"
-    ip:
-EOF
+setup_allowlist() {
+  log "Aplic whitelist la IP-uri..."
 
-for ip in $WHITELIST_IPS; do
-  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-    echo "    - \"$ip\"" >> "$WHITELIST_FILE"
-    echo "✅ Whitelisted: $ip"
-  else
-    echo "❌ IP invalid ignorat: $ip"
-  fi
-done
+  cscli allowlist inspect "$ALLOWLIST_NAME" >/dev/null 2>&1 || \
+    cscli allowlist create "$ALLOWLIST_NAME" -d "Webhook-uri, IP local și IP-uri personale"
 
-SERVER_IP=$(curl -s https://ipinfo.io/ip)
-if [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "    - \"$SERVER_IP\"" >> "$WHITELIST_FILE"
-  echo "✅ IP server adăugat în whitelist: $SERVER_IP"
-fi
+  for ip in $WHITELIST_IPS; do
+    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]] && \
+      cscli allowlist add "$ALLOWLIST_NAME" "$ip" && echo "✅ Whitelisted: $ip"
+  done
 
-systemctl reload crowdsec
-if systemctl restart crowdsec; then
-  echo "✅ CrowdSec repornit cu succes."
-else
-  echo "❌ Eroare la restartarea CrowdSec. Verifică logurile."
-fi
+  SERVER_IP=$(curl -s https://ipinfo.io/ip)
+  [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && \
+    cscli allowlist add "$ALLOWLIST_NAME" "$SERVER_IP" && echo "✅ IP server adăugat în whitelist: $SERVER_IP"
 
-# 11. Notificări Telegram
-echo "📩 Configurez notificări Telegram..."
-NOTIFY_SCRIPT="/etc/cloudflare-bouncer/notify-telegram.sh"
-cat > "$NOTIFY_SCRIPT" <<EOF
+  systemctl reload crowdsec
+}
+
+configure_telegram() {
+  log "Configurez notificări Telegram..."
+  mkdir -p /etc/cloudflare-bouncer
+
+  cat > "$NOTIFY_SCRIPT" <<EOF
 #!/bin/bash
 MESSAGE=\$1
 curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \\
@@ -175,15 +198,13 @@ curl -s -X POST https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage \\
      -d message_thread_id=$TELEGRAM_THREAD_ID \\
      -d text="\$MESSAGE"
 EOF
+  chmod +x "$NOTIFY_SCRIPT"
+}
 
-chmod +x "$NOTIFY_SCRIPT"
-
-"$NOTIFY_SCRIPT" "✅ Instalare completă CrowdSec + FastPanel + Cloudflare + Telegram OK"
-
-# 12. Hook evenimente
-HOOK_SCRIPT="/etc/crowdsec/plugins/notification.sh"
-mkdir -p /etc/crowdsec/plugins
-cat > "$HOOK_SCRIPT" <<EOF
+setup_hook() {
+  log "Adaug hook pentru evenimente CrowdSec..."
+  mkdir -p "$(dirname "$HOOK_SCRIPT")"
+  cat > "$HOOK_SCRIPT" <<EOF
 #!/bin/bash
 ACTION=\$1
 IP=\$2
@@ -191,24 +212,47 @@ REASON=\$3
 MESSAGE="📡 CrowdSec: \$ACTION IP \$IP (Reason: \$REASON)"
 $NOTIFY_SCRIPT "\$MESSAGE"
 EOF
+  chmod +x "$HOOK_SCRIPT"
+}
 
-chmod +x "$HOOK_SCRIPT"
+connect_dashboard() {
+  log "Conectez la CrowdSec Console..."
+  cscli console enroll -e context "$DASHBOARD_API_KEY" || echo "❌ Conectarea a eșuat"
+}
 
-# 13. Conectare la CrowdSec Console
-echo "🌐 Conectez la CrowdSec Console via API..."
-cscli console enroll -e context "$DASHBOARD_API_KEY" || echo "❌ Conectarea la dashboard a eșuat"
+configure_crontab() {
+  log "Configurez crontab..."
+  (crontab -l 2>/dev/null | grep -q "update-cloudflare-bouncer.sh") || \
+    (crontab -l 2>/dev/null; echo "0 */6 * * * /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh >> /var/log/cloudflare-bouncer-update.log 2>&1") | crontab -
+}
 
-# 14. Permisiuni scripturi
-echo "🛠️  Setez permisiuni pentru scripturi..."
-chmod +x /etc/cloudflare-bouncer/sync-env.sh
-chmod +x /etc/cloudflare-bouncer/install-full-stack.sh
-chmod +x /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh
+set_permissions() {
+  log "Setez permisiuni scripturi..."
+  chmod +x /etc/cloudflare-bouncer/install-full-stack.sh \
+            /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh
+}
 
-# 15. Adaugă în crontab
-echo "📅 Adaug joburi în crontab..."
-(crontab -l 2>/dev/null; echo "0 */6 * * * /etc/cloudflare-bouncer/update-cloudflare-bouncer.sh >> /var/log/cloudflare-bouncer-update.log 2>&1") | crontab -
-(crontab -l 2>/dev/null; echo "*/30 * * * * /etc/cloudflare-bouncer/sync-env.sh >> /var/log/cloudflare-sync.log 2>&1") | crontab -
+run_install_script_once() {
+  [[ "$(realpath "$0")" != "$INSTALL_SCRIPT_PATH" ]] && bash "$INSTALL_SCRIPT_PATH"
+}
 
-# 16. Finalizare
-echo "🚀 Execut scriptul curent pentru a finaliza procesul..."
-/etc/cloudflare-bouncer/install-full-stack.sh
+### === EXECUȚIE ===
+
+check_env_file
+update_system
+install_fastpanel
+install_crowdsec
+install_collections
+configure_acquis
+configure_cloudflare_bouncer
+setup_allowlist
+configure_telegram
+setup_hook
+connect_dashboard
+configure_crontab
+set_permissions
+
+notify "✅ Instalare completă CrowdSec + FastPanel + Cloudflare + Telegram OK"
+run_install_script_once
+
+log "✅ Instalarea completă s-a finalizat."
